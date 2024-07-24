@@ -9,7 +9,7 @@ app = FastAPI()
 
 
 @app.post("/add/{x}/{y}")
-def run_add_task(x: str, y: int):
+def run_add_task(x: int, y: int):
     task = add.delay(x, y)
     return {"ID": task.id}
 
