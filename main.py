@@ -1,39 +1,41 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
 from celery.result import AsyncResult
-from tasks import add
-import uvicorn
-from celery_app import celery_app
-
+from tasks import transcribe_audio_task
 
 app = FastAPI()
 
 
-@app.post("/add/{x}/{y}")
-def run_add_task(x: str, y: int):
-    task = add.delay(x, y)
-    return {"ID": task.id}
+class TranscriptionResponse(BaseModel):
+    task_id: str
 
 
-@app.get("/status/{task_id}")
-def get_task_status(task_id: str):
-    task_result = AsyncResult(task_id, app=celery_app)
+@app.post("/transcribe", response_model=TranscriptionResponse)
+async def transcribe(file: UploadFile = File(...)):
+    audio_path = f"temp_{file.filename}"
+    with open(audio_path, "wb") as f:
+        f.write(await file.read())
+
+    task = transcribe_audio_task.delay(audio_path)
+
+    return {"task_id": task.id}
+
+
+@app.get("/result/{task_id}")
+async def get_result(task_id: str):
+    task_result = AsyncResult(task_id)
+
     if task_result.state == 'PENDING':
-        return {"status": task_result.state}
-    elif task_result.state != 'FAILURE':
-        return {"status": task_result.state, "res": task_result.result}
+        return {"status": "Pending", "result": None}
+    elif task_result.state == 'STARTED':
+        return {"status": "Processing", "result": None}
+    elif task_result.state == 'SUCCESS':
+        return {"status": task_result.state, "result": task_result.result}
+    elif task_result.state == 'FAILURE':
+        return {"status": task_result.state, "result": task_result.result}
     else:
-        return {"status": task_result.state, "res": str(task_result.info)}
+        raise HTTPException(status_code=500, detail="Task failed")
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-#celery -A celery_app worker --loglevel=info
 #uvicorn main:app --reload
-
-#$response = Invoke-RestMethod -Uri "http://localhost:8000/add/4/5" -Method Post
-#$response
-
-#$response = Invoke-RestMethod -Uri "http://localhost:8000/status/{task_id}" -Method Get
-#$response
+#celery -A tasks worker --loglevel=info --concurrency=1
